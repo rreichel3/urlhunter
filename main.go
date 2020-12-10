@@ -182,10 +182,25 @@ func getArchive(body []byte, date string, keywordFile string, outfile string) {
 			continue
 		}
 		var searchFileWaitGroup sync.WaitGroup
+		resultsChannel := make(chan string)
 		for _, item := range dumpFiles.File {
 			dump_path, _ := filepath.Glob(filepath.Join("archives", fullname, item.DumpType, "*.txt"))
 			searchFileWaitGroup.Add(1)
-			go searchFile(dump_path[0], keywordSlice[i], outfile, &searchFileWaitGroup)
+			go searchFile(dump_path[0], keywordSlice[i], resultsChannel, &searchFileWaitGroup)
+		}
+		outputFile, err := os.OpenFile(outfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			panic(err)
+		}
+		defer outputFile.Close()
+
+		go func() {
+			searchFileWaitGroup.Wait()
+			close(resultsChannel)
+		}()
+
+		for resultString := range resultsChannel {
+			outputFile.WriteString(resultString + "\n")
 		}
 	}
 
@@ -213,17 +228,12 @@ func fetchAndUnzipArchive(fullname string, item ArchiveFile, wg *sync.WaitGroup)
 	}
 }
 
-func searchFile(fileLocation string, keyword string, outfile string, searchFileWaitGroup *sync.WaitGroup) {
+func searchFile(fileLocation string, keyword string, resultsChannel chan string, searchFileWaitGroup *sync.WaitGroup) {
 	defer searchFileWaitGroup.Done()
 	path := strings.Split(fileLocation, "/")[1] + "/" + strings.Split(fileLocation, "/")[2]
 	fmt.Println("Searching: " + keyword + " in: " + path)
 	f, err := os.Open(fileLocation)
 	scanner := bufio.NewScanner(f)
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-	f, err = os.OpenFile(outfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		panic(err)
 	}
@@ -238,9 +248,7 @@ func searchFile(fileLocation string, keyword string, outfile string, searchFileW
 		for scanner.Scan() {
 			if r.MatchString(scanner.Text()) {
 				textToWrite := strings.Split(scanner.Text(), "|")[1]
-				if _, err := f.WriteString(textToWrite + "\n"); err != nil {
-					panic(err)
-				}
+				resultsChannel <- textToWrite
 			}
 		}
 	} else {
@@ -257,9 +265,7 @@ func searchFile(fileLocation string, keyword string, outfile string, searchFileW
 				}
 				if foundFlag == true {
 					textToWrite := strings.Split(scanner.Text(), "|")[1]
-					if _, err := f.WriteString(textToWrite + "\n"); err != nil {
-						panic(err)
-					}
+					resultsChannel <- textToWrite
 				}
 			}
 
@@ -268,9 +274,7 @@ func searchFile(fileLocation string, keyword string, outfile string, searchFileW
 			for scanner.Scan() {
 				if bytes.Contains(scanner.Bytes(), toFind) {
 					textToWrite := strings.Split(scanner.Text(), "|")[1]
-					if _, err := f.WriteString(textToWrite + "\n"); err != nil {
-						panic(err)
-					}
+					resultsChannel <- textToWrite
 				}
 			}
 		}
