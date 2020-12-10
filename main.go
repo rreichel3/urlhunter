@@ -157,14 +157,12 @@ func getArchive(body []byte, date string, keywordFile string, outfile string) {
 		fetchArchiveWaitGroup.Wait()
 
 		color.Cyan("Decompressing XZ Archives..")
+		var xzDecompressWaitGroup sync.WaitGroup
 		for _, item := range dumpFiles.File {
-			tarfile, _ := filepath.Glob(filepath.Join("archives", fullname, item.DumpType, "*.txt.xz"))
-			_, err := exec.Command("xz", "--decompress", tarfile[0]).Output()
-			if err != nil {
-				fmt.Println(err)
-				panic(err)
-			}
+			xzDecompressWaitGroup.Add(1)
+			go decompressXZArchive(fullname, item, &xzDecompressWaitGroup)
 		}
+		xzDecompressWaitGroup.Wait()
 
 		color.Cyan("Removing Zip Files..")
 		for _, item := range dumpFiles.File {
@@ -204,6 +202,16 @@ func getArchive(body []byte, date string, keywordFile string, outfile string) {
 		}
 	}
 
+}
+
+func decompressXZArchive(fullname string, item ArchiveFile, wg *sync.WaitGroup) {
+	defer wg.Done()
+	tarfile, _ := filepath.Glob(filepath.Join("archives", fullname, item.DumpType, "*.txt.xz"))
+	_, err := exec.Command("xz", "--decompress", tarfile[0]).Output()
+	if err != nil {
+		fmt.Println(err)
+		panic(err)
+	}
 }
 
 func fetchAndUnzipArchive(fullname string, item ArchiveFile, wg *sync.WaitGroup) {
