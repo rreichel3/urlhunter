@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -25,21 +26,23 @@ import (
 var baseurl string = "https://archive.org/services/search/v1/scrape?debug=false&xvar=production&total_only=false&count=10000&fields=identifier%2Citem_size&q=Urlteam%20Release"
 
 type Files struct {
-	XMLName xml.Name `xml:"files"`
-	Text    string   `xml:",chardata"`
-	File    []struct {
-		Text     string `xml:",chardata"`
-		Name     string `xml:"name,attr"`
-		Source   string `xml:"source,attr"`
-		Mtime    string `xml:"mtime"`
-		Size     string `xml:"size"`
-		Md5      string `xml:"md5"`
-		Crc32    string `xml:"crc32"`
-		Sha1     string `xml:"sha1"`
-		Format   string `xml:"format"`
-		Btih     string `xml:"btih"`
-		DumpType string `xml:name,attr`
-	} `xml:"file"`
+	XMLName xml.Name      `xml:"files"`
+	Text    string        `xml:",chardata"`
+	File    []ArchiveFile `xml:"file"`
+}
+
+type ArchiveFile struct {
+	Text     string `xml:",chardata"`
+	Name     string `xml:"name,attr"`
+	Source   string `xml:"source,attr"`
+	Mtime    string `xml:"mtime"`
+	Size     string `xml:"size"`
+	Md5      string `xml:"md5"`
+	Crc32    string `xml:"crc32"`
+	Sha1     string `xml:"sha1"`
+	Format   string `xml:"format"`
+	Btih     string `xml:"btih"`
+	DumpType string `xml:name,attr`
 }
 
 func main() {
@@ -144,26 +147,14 @@ func getArchive(body []byte, date string, keywordFile string, outfile string) {
 	if ifArchiveExists(fullname) {
 		color.Cyan(fullname + " Archive already exists!")
 	} else {
+		var fetchArchiveWaitGroup sync.WaitGroup
+
 		for _, item := range dumpFiles.File {
-			dumpFilepath, _ := filepath.Glob(filepath.Join("archives", fullname, item.DumpType, "*.txt"))
-			if len(dumpFilepath) > 0 {
-				_ = os.Remove(dumpFilepath[0])
-			}
-
-			if fileExists(filepath.Join("archives", fullname, item.Name)) == false {
-				color.Red(item.Name + " doesn't exist locally.")
-				url1 := "https://archive.org/download/" + fullname + "/" + item.Name
-				downloadFile(url1)
-			}
-
-			color.Magenta("Unzipping: " + item.Name)
-			_, err := Unzip(filepath.Join("archives", fullname, item.Name), filepath.Join("archives", fullname))
-			if err != nil {
-				color.Red(item.Name + " looks damaged. It's removed now. Run the program again to re-download.")
-				os.Remove(filepath.Join("archives", fullname, item.Name))
-				os.Exit(1)
-			}
+			fetchArchiveWaitGroup.Add(1)
+			go fetchAndUnzipArchive(fullname, item, &fetchArchiveWaitGroup)
 		}
+		// Block until the above files are fetched and unzipped
+		fetchArchiveWaitGroup.Wait()
 
 		color.Cyan("Decompressing XZ Archives..")
 		for _, item := range dumpFiles.File {
@@ -185,19 +176,45 @@ func getArchive(body []byte, date string, keywordFile string, outfile string) {
 		panic(err)
 	}
 	keywordSlice := strings.Split(string(fileBytes), "\n")
+	//TODO: Think about paralellizing each keyword processing
 	for i := 0; i < len(keywordSlice); i++ {
 		if keywordSlice[i] == "" {
 			continue
 		}
+		var searchFileWaitGroup sync.WaitGroup
 		for _, item := range dumpFiles.File {
 			dump_path, _ := filepath.Glob(filepath.Join("archives", fullname, item.DumpType, "*.txt"))
-			searchFile(dump_path[0], keywordSlice[i], outfile)
+			searchFileWaitGroup.Add(1)
+			go searchFile(dump_path[0], keywordSlice[i], outfile, &searchFileWaitGroup)
 		}
 	}
 
 }
 
-func searchFile(fileLocation string, keyword string, outfile string) {
+func fetchAndUnzipArchive(fullname string, item ArchiveFile, wg *sync.WaitGroup) {
+	defer wg.Done()
+	dumpFilepath, _ := filepath.Glob(filepath.Join("archives", fullname, item.DumpType, "*.txt"))
+	if len(dumpFilepath) > 0 {
+		_ = os.Remove(dumpFilepath[0])
+	}
+
+	if fileExists(filepath.Join("archives", fullname, item.Name)) == false {
+		color.Red(item.Name + " doesn't exist locally.")
+		url1 := "https://archive.org/download/" + fullname + "/" + item.Name
+		downloadFile(url1)
+	}
+
+	color.Magenta("Unzipping: " + item.Name)
+	_, err := Unzip(filepath.Join("archives", fullname, item.Name), filepath.Join("archives", fullname))
+	if err != nil {
+		color.Red(item.Name + " looks damaged. It's removed now. Run the program again to re-download.")
+		os.Remove(filepath.Join("archives", fullname, item.Name))
+		os.Exit(1)
+	}
+}
+
+func searchFile(fileLocation string, keyword string, outfile string, searchFileWaitGroup *sync.WaitGroup) {
+	defer searchFileWaitGroup.Done()
 	path := strings.Split(fileLocation, "/")[1] + "/" + strings.Split(fileLocation, "/")[2]
 	fmt.Println("Searching: " + keyword + " in: " + path)
 	f, err := os.Open(fileLocation)
